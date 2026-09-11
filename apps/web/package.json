@@ -23,7 +23,7 @@
     "clsx": "^2.1.0",
     "tailwind-merge": "^2.5.0",
     "framer-motion": "^11.5.0",
-    "sonner": "^1.5.0",
+    "sonner": "^2.0.8",
     "cmdk": "^1.0.0",
     "lucide-react": "^0.441.0",
     "recharts": "^2.12.0",
