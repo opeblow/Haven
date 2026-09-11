@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
+import uuid
 from typing import Any
 
 import structlog
@@ -14,9 +16,27 @@ from haven.agents.logistics_agent import create_logistics_agent
 from haven.agents.recipient_agent import create_recipient_agent
 from haven.agents.volunteer_agent import create_volunteer_agent
 from haven.config import get_settings
+from haven.db import create_donation
 from haven.models import AgentEvent, UrgencyLevel
 
 logger = structlog.get_logger()
+
+
+def _result_text(result: Any) -> str:
+    """Extract human-readable text from a strands AgentResult.
+
+    The SDK returns an ``AgentResult`` object rather than plain text; this
+    defensively unwraps the common shapes so downstream routing never crashes
+    on the object repr.
+    """
+    if isinstance(result, str):
+        return result
+    for attr in ("message", "response", "text"):
+        value = getattr(result, attr, None)
+        if isinstance(value, str):
+            return value
+    return str(result)
+
 
 SUPERVISOR_SYSTEM_PROMPT = """You are the Haven Supervisor, the orchestrator of a
 multi-agent system that manages food bank operations.
@@ -82,7 +102,7 @@ class Supervisor:
             urgency=event.urgency.value,
         )
 
-        routing_decision = await self._agent.invoke(
+        routing_decision = await self._agent.invoke_async(
             f"Route this event to the appropriate agent(s). "
             f"Event type: {event.event_type}\n"
             f"Source: {event.source}\n"
@@ -92,7 +112,7 @@ class Supervisor:
             f"Which agent(s) should handle this? Return agent names as a comma-separated list."
         )
 
-        target_agents = self._parse_routing_decision(str(routing_decision))
+        target_agents = self._parse_routing_decision(_result_text(routing_decision))
 
         results = {}
         for agent_name in target_agents:
@@ -102,10 +122,10 @@ class Supervisor:
                     agent=agent_name,
                     event_type=event.event_type,
                 )
-                response = await self._agents[agent_name].invoke(
+                response = await self._agents[agent_name].invoke_async(
                     f"Handle this event:\n{json.dumps(event.payload, default=str)}"
                 )
-                results[agent_name] = str(response)
+                results[agent_name] = _result_text(response)
                 event.processed_by.append(agent_name)
 
         should_escalate = event.urgency in (UrgencyLevel.HIGH, UrgencyLevel.CRITICAL)
@@ -120,15 +140,32 @@ class Supervisor:
 
     async def handle_donation_offer(self, donor_data: dict) -> dict[str, Any]:
         """End-to-end workflow for a new donation offer."""
+        # Persist the donation deterministically BEFORE any model invocation so the
+        # record identity is stable and handoffs always carry a real donation_id.
+        donation_id = donor_data.get("id") or str(uuid.uuid4())
+        donor_data = {**donor_data, "id": donation_id}
+        await asyncio.to_thread(
+            create_donation,
+            {
+                "id": donation_id,
+                "donor_name": donor_data.get("donor_name", ""),
+                "donor_phone": donor_data.get("donor_phone", ""),
+                "donor_email": donor_data.get("donor_email", ""),
+                "description": donor_data.get("description", ""),
+                "quantity": donor_data.get("quantity", ""),
+                "category": donor_data.get("category", "other"),
+                "requires_refrigeration": donor_data.get("requires_refrigeration", False),
+                "address": donor_data.get("address", ""),
+                "status": "offered",
+                "notes": donor_data.get("notes", ""),
+            },
+        )
+
         event = AgentEvent(
             event_type="donation_offer",
             source=donor_data.get("source", "sms"),
-            payload=donor_data,
-            urgency=(
-                UrgencyLevel.HIGH
-                if donor_data.get("requires_refrigeration")
-                else UrgencyLevel.MEDIUM
-            ),
+            payload={**donor_data, "donation_id": donation_id},
+            urgency=(UrgencyLevel.HIGH if donor_data.get("requires_refrigeration") else UrgencyLevel.MEDIUM),
         )
         result = await self.route_event(event)
 
@@ -137,15 +174,15 @@ class Supervisor:
                 event_type="logistics_planning",
                 source="supervisor",
                 payload={
-                    "donation_id": donor_data.get("id", ""),
+                    "donation_id": donation_id,
                     "origin": donor_data.get("address", ""),
                     "cold_chain": donor_data.get("requires_refrigeration", False),
                 },
             )
-            logistics_result = await self._logistics_agent.invoke(
+            logistics_result = await self._logistics_agent.invoke_async(
                 f"Plan logistics for this donation:\n{json.dumps(logistics_event.payload, default=str)}"
             )
-            result["logistics"] = str(logistics_result)
+            result["logistics"] = _result_text(logistics_result)
 
         return result
 
@@ -172,10 +209,7 @@ class Supervisor:
         """Return the current status of all agents."""
         return {
             "supervisor": "active",
-            "agents": {
-                name: {"status": "active", "model": get_settings().bedrock_model_id}
-                for name in self._agents
-            },
+            "agents": {name: {"status": "active", "model": get_settings().bedrock_model_id} for name in self._agents},
             "uptime": "operational",
         }
 

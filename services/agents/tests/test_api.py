@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
@@ -13,32 +13,40 @@ def client(mock_dynamodb):
     """Create a test client with mocked dependencies."""
     with patch("haven.api.Supervisor") as mock_supervisor_cls:
         mock_supervisor = MagicMock()
-        mock_supervisor.get_status.return_value = {
-            "supervisor": "active",
-            "agents": {},
-            "uptime": "operational",
-        }
-        mock_supervisor.handle_donation_offer.return_value = {
-            "event_id": "test-event",
-            "routing_decision": ["donor"],
-            "results": {"donor": "processed"},
-            "escalated_to_human": False,
-            "all_processed": True,
-        }
-        mock_supervisor.handle_volunteer_inquiry.return_value = {
-            "event_id": "test-event",
-            "routing_decision": ["volunteer"],
-            "results": {"volunteer": "processed"},
-            "escalated_to_human": False,
-            "all_processed": True,
-        }
-        mock_supervisor.handle_recipient_request.return_value = {
-            "event_id": "test-event",
-            "routing_decision": ["recipient"],
-            "results": {"recipient": "processed"},
-            "escalated_to_human": True,
-            "all_processed": True,
-        }
+        mock_supervisor.get_status = AsyncMock(
+            return_value={
+                "supervisor": "active",
+                "agents": {},
+                "uptime": "operational",
+            }
+        )
+        mock_supervisor.handle_donation_offer = AsyncMock(
+            return_value={
+                "event_id": "test-event",
+                "routing_decision": ["donor"],
+                "results": {"donor": "processed"},
+                "escalated_to_human": False,
+                "all_processed": True,
+            }
+        )
+        mock_supervisor.handle_volunteer_inquiry = AsyncMock(
+            return_value={
+                "event_id": "test-event",
+                "routing_decision": ["volunteer"],
+                "results": {"volunteer": "processed"},
+                "escalated_to_human": False,
+                "all_processed": True,
+            }
+        )
+        mock_supervisor.handle_recipient_request = AsyncMock(
+            return_value={
+                "event_id": "test-event",
+                "routing_decision": ["recipient"],
+                "results": {"recipient": "processed"},
+                "escalated_to_human": True,
+                "all_processed": True,
+            }
+        )
         mock_supervisor_cls.return_value = mock_supervisor
 
         from haven.api import app
@@ -61,13 +69,16 @@ class TestHealthEndpoint:
 class TestDonationEndpoints:
     def test_submit_donation_offer(self, client):
         c, mock_supervisor = client
-        resp = c.post("/api/donations/offer", json={
-            "donor_name": "Green Farms",
-            "donor_phone": "555-0100",
-            "description": "Fresh vegetables",
-            "quantity": "200 lbs",
-            "category": "produce",
-        })
+        resp = c.post(
+            "/api/donations/offer",
+            json={
+                "donor_name": "Green Farms",
+                "donor_phone": "555-0100",
+                "description": "Fresh vegetables",
+                "quantity": "200 lbs",
+                "category": "produce",
+            },
+        )
         assert resp.status_code == 200
         data = resp.json()
         assert data["success"] is True
@@ -101,13 +112,15 @@ class TestDonationEndpoints:
 class TestVolunteerEndpoints:
     def test_submit_volunteer_inquiry(self, client, mock_dynamodb):
         c, mock_supervisor = client
-        _, mock_table = mock_dynamodb
-        resp = c.post("/api/volunteers/inquiry", json={
-            "name": "Maria Rodriguez",
-            "phone": "555-0123",
-            "email": "maria@test.com",
-            "skills": ["food_distribution"],
-        })
+        resp = c.post(
+            "/api/volunteers/inquiry",
+            json={
+                "name": "Maria Rodriguez",
+                "phone": "555-0123",
+                "email": "maria@test.com",
+                "skills": ["food_distribution"],
+            },
+        )
         assert resp.status_code == 200
         data = resp.json()
         assert data["success"] is True
@@ -127,11 +140,14 @@ class TestVolunteerEndpoints:
 class TestRecipientEndpoints:
     def test_submit_recipient_request(self, client):
         c, mock_supervisor = client
-        resp = c.post("/api/recipients/request", json={
-            "phone": "555-0789",
-            "request_text": "Need food for family",
-            "language": "en",
-        })
+        resp = c.post(
+            "/api/recipients/request",
+            json={
+                "phone": "555-0789",
+                "request_text": "Need food for family",
+                "language": "en",
+            },
+        )
         assert resp.status_code == 200
         data = resp.json()
         assert data["success"] is True
@@ -178,14 +194,17 @@ class TestShiftEndpoints:
 
     def test_create_shift(self, client, mock_dynamodb):
         c, _ = client
-        resp = c.post("/api/shifts", json={
-            "pantry_id": "p1",
-            "pantry_name": "Test Pantry",
-            "role": "food_distribution",
-            "start_time": "2026-09-12T09:00:00Z",
-            "end_time": "2026-09-12T13:00:00Z",
-            "volunteers_needed": 3,
-        })
+        resp = c.post(
+            "/api/shifts",
+            json={
+                "pantry_id": "p1",
+                "pantry_name": "Test Pantry",
+                "role": "food_distribution",
+                "start_time": "2026-09-12T09:00:00Z",
+                "end_time": "2026-09-12T13:00:00Z",
+                "volunteers_needed": 3,
+            },
+        )
         assert resp.status_code == 200
         data = resp.json()
         assert data["success"] is True

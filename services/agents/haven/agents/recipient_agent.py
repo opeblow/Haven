@@ -9,6 +9,7 @@ from haven.tools.recipient_tools import (
     check_pantry_hours,
     find_nearest_pantry,
     list_available_items,
+    submit_recipient_request,
     translate_response,
     verify_eligibility,
 )
@@ -50,5 +51,6 @@ def create_recipient_agent() -> Agent:
             verify_eligibility,
             list_available_items,
             translate_response,
+            submit_recipient_request,
         ],
     )

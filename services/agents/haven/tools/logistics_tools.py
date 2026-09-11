@@ -4,16 +4,11 @@ from __future__ import annotations
 
 import uuid
 
-import boto3
 from strands import tool
 
-from haven.config import get_settings
 from haven.db import (
     create_audit_entry,
-    create_donation,
     create_event,
-    get_donation,
-    update_donation,
 )
 
 
@@ -43,21 +38,25 @@ def optimize_route(
         "status": "planned",
     }
 
-    create_event({
-        "id": str(uuid.uuid4()),
-        "event_type": "route_optimized",
-        "source": "logistics_agent",
-        "payload": route_record,
-        "urgency": "medium" if not cold_chain_required else "high",
-    })
+    create_event(
+        {
+            "id": str(uuid.uuid4()),
+            "event_type": "route_optimized",
+            "source": "logistics_agent",
+            "payload": route_record,
+            "urgency": "medium" if not cold_chain_required else "high",
+        }
+    )
 
-    create_audit_entry({
-        "action": "route_optimized",
-        "agent": "logistics",
-        "entity_type": "route",
-        "entity_id": route_record["id"],
-        "details": route_record,
-    })
+    create_audit_entry(
+        {
+            "action": "route_optimized",
+            "agent": "logistics",
+            "entity_type": "route",
+            "entity_id": route_record["id"],
+            "details": route_record,
+        }
+    )
 
     return {
         "route_id": route_record["id"],
@@ -98,13 +97,15 @@ def generate_manifest(
         "recipient_signature_required": True,
     }
 
-    create_audit_entry({
-        "action": "manifest_generated",
-        "agent": "logistics",
-        "entity_type": "manifest",
-        "entity_id": manifest_id,
-        "details": {"donation_id": donation_id, "total_items": len(items)},
-    })
+    create_audit_entry(
+        {
+            "action": "manifest_generated",
+            "agent": "logistics",
+            "entity_type": "manifest",
+            "entity_id": manifest_id,
+            "details": {"donation_id": donation_id, "total_items": len(items)},
+        }
+    )
 
     return {"manifest": manifest, "status": "ready"}
 
@@ -115,31 +116,41 @@ def dispatch_driver(
     manifest_id: str,
     vehicle_type: str = "van",
 ) -> dict:
-    """Dispatch a driver for a pickup/delivery run. Logs event to DynamoDB."""
-    create_event({
-        "id": str(uuid.uuid4()),
-        "event_type": "driver_dispatched",
-        "source": "logistics_agent",
-        "payload": {"driver_id": driver_id, "manifest_id": manifest_id, "vehicle_type": vehicle_type},
-        "urgency": "medium",
-    })
+    """Dispatch a driver for a pickup/delivery run. Logs event to DynamoDB.
 
-    create_audit_entry({
-        "action": "driver_dispatched",
-        "agent": "logistics",
-        "entity_type": "driver",
-        "entity_id": driver_id,
-        "details": {"manifest_id": manifest_id, "vehicle_type": vehicle_type},
-    })
+    This records dispatch *intent* and creates the audit trail. Driver SMS
+    notification and live tracking are NOT integrated, so the response
+    reports that honestly rather than claiming they happened.
+    """
+    create_event(
+        {
+            "id": str(uuid.uuid4()),
+            "event_type": "driver_dispatched",
+            "source": "logistics_agent",
+            "payload": {"driver_id": driver_id, "manifest_id": manifest_id, "vehicle_type": vehicle_type},
+            "urgency": "medium",
+        }
+    )
+
+    create_audit_entry(
+        {
+            "action": "driver_dispatched",
+            "agent": "logistics",
+            "entity_type": "driver",
+            "entity_id": driver_id,
+            "details": {"manifest_id": manifest_id, "vehicle_type": vehicle_type},
+        }
+    )
 
     return {
         "driver_id": driver_id,
         "manifest_id": manifest_id,
         "vehicle_type": vehicle_type,
-        "status": "dispatched",
-        "driver_notified": True,
-        "estimated_departure": "30 minutes",
-        "tracking_enabled": True,
+        "status": "logged",
+        "driver_notified": False,
+        "tracking_enabled": False,
+        "notification_channel": "not_configured",
+        "next_step": "Confirm dispatch with coordinator and send driver notification",
     }
 
 
@@ -157,26 +168,30 @@ def track_cold_chain(
     in_range = required_min <= current_temperature <= required_max
 
     if not in_range:
-        create_event({
-            "id": str(uuid.uuid4()),
-            "event_type": "cold_chain_breach",
-            "source": "logistics_agent",
-            "payload": {
-                "shipment_id": shipment_id,
-                "temperature": current_temperature,
-                "required_min": required_min,
-                "required_max": required_max,
-            },
-            "urgency": "critical",
-        })
+        create_event(
+            {
+                "id": str(uuid.uuid4()),
+                "event_type": "cold_chain_breach",
+                "source": "logistics_agent",
+                "payload": {
+                    "shipment_id": shipment_id,
+                    "temperature": current_temperature,
+                    "required_min": required_min,
+                    "required_max": required_max,
+                },
+                "urgency": "critical",
+            }
+        )
 
-        create_audit_entry({
-            "action": "cold_chain_breach",
-            "agent": "logistics",
-            "entity_type": "shipment",
-            "entity_id": shipment_id,
-            "details": {"temperature": current_temperature, "required_range": f"{required_min}-{required_max}"},
-        })
+        create_audit_entry(
+            {
+                "action": "cold_chain_breach",
+                "agent": "logistics",
+                "entity_type": "shipment",
+                "entity_id": shipment_id,
+                "details": {"temperature": current_temperature, "required_range": f"{required_min}-{required_max}"},
+            }
+        )
 
     return {
         "shipment_id": shipment_id,
@@ -184,7 +199,5 @@ def track_cold_chain(
         "required_range_f": f"{required_min}-{required_max}",
         "in_compliance": in_range,
         "alert": None if in_range else "CRITICAL: Temperature out of range!",
-        "recommendation": (
-            "Continue transport" if in_range else "IMMEDIATE ACTION: Check cooling equipment"
-        ),
+        "recommendation": ("Continue transport" if in_range else "IMMEDIATE ACTION: Check cooling equipment"),
     }

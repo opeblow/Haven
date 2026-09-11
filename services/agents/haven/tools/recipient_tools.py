@@ -5,14 +5,13 @@ from __future__ import annotations
 import uuid
 
 import boto3
+from botocore.exceptions import BotoCoreError, ClientError
 from strands import tool
 
 from haven.config import get_settings
 from haven.db import (
     create_audit_entry,
     create_event,
-    get_recipient_request,
-    update_recipient_request,
 )
 
 
@@ -23,13 +22,25 @@ def find_nearest_pantry(
     category: str = "",
     language: str = "en",
 ) -> dict:
-    """Find the nearest food pantry based on location using DynamoDB.
+    """Find the nearest food pantry based on location.
 
-    Queries the donations/pantries data to find nearby pantries.
+    Reads from the dedicated pantries table (HAVEN_PANTRIES_TABLE) when it is
+    provisioned. The donations table stores donor offers, not pantries, so it
+    is never treated as pantry data.
     """
     settings = get_settings()
+
+    if not settings.pantries_table:
+        return {
+            "pantries": [],
+            "total_found": 0,
+            "search_location": {"lat": latitude, "lng": longitude},
+            "data_available": False,
+            "message": "Pantry registry is not provisioned. No pantry data found.",
+        }
+
     dynamodb = boto3.resource("dynamodb", region_name=settings.aws_region)
-    table = dynamodb.Table(settings.donations_table)
+    table = dynamodb.Table(settings.pantries_table)
 
     resp = table.scan()
     items = resp.get("Items", [])
@@ -40,38 +51,63 @@ def find_nearest_pantry(
         lng = item.get("longitude")
         if lat and lng:
             dist = ((float(lat) - latitude) ** 2 + (float(lng) - longitude) ** 2) ** 0.5 * 69.0
-            pantries.append({
-                "id": item.get("id", ""),
-                "name": item.get("donor_name", "Unknown Pantry"),
-                "address": item.get("address", ""),
-                "distance_miles": round(dist, 1),
-                "services": ["food_boxes"],
-                "eligible": True,
-            })
+            pantries.append(
+                {
+                    "id": item.get("id", ""),
+                    "name": item.get("name", "Unknown Pantry"),
+                    "address": item.get("address", ""),
+                    "distance_miles": round(dist, 1),
+                    "services": item.get("services", []),
+                    "eligible": item.get("eligibility_checked", False),
+                }
+            )
 
     pantries.sort(key=lambda x: x["distance_miles"])
     return {
         "pantries": pantries[:5],
         "total_found": len(pantries),
         "search_location": {"lat": latitude, "lng": longitude},
+        "data_available": True,
     }
 
 
 @tool
 def check_pantry_hours(pantry_id: str) -> dict:
-    """Check current open/closed status and hours for a pantry."""
+    """Check current open/closed status and hours for a pantry.
+
+    Only reports operating hours when a real pantry record with hours exists.
+    """
     settings = get_settings()
     dynamodb = boto3.resource("dynamodb", region_name=settings.aws_region)
     table = dynamodb.Table(settings.donations_table)
     resp = table.get_item(Key={"id": pantry_id})
     item = resp.get("Item", {})
 
+    if settings.pantries_table:
+        pantry_table = dynamodb.Table(settings.pantries_table)
+        pantry_resp = pantry_table.get_item(Key={"id": pantry_id})
+        pantry = pantry_resp.get("Item", {})
+    else:
+        pantry = {}
+
+    hours = pantry.get("hours") or item.get("hours")
+    if not hours:
+        return {
+            "pantry_id": pantry_id,
+            "data_available": False,
+            "is_open": None,
+            "hours": None,
+            "message": "Operating hours are not on file for this pantry.",
+        }
+
     return {
         "pantry_id": pantry_id,
-        "name": item.get("donor_name", "Unknown"),
-        "address": item.get("address", ""),
-        "is_open": True,
-        "hours": item.get("hours", "Mon-Fri 9AM-4PM"),
+        "name": pantry.get("name") or item.get("donor_name", "Unknown"),
+        "address": pantry.get("address") or item.get("address", ""),
+        "is_open": None,
+        "hours": hours,
+        "data_available": True,
+        "message": "Hours listed; current open/closed status requires an opening-hours service.",
     }
 
 
@@ -82,23 +118,47 @@ def verify_eligibility(
     zip_code: str,
     income_level: str = "",
 ) -> dict:
-    """Check if someone is eligible for services at a specific pantry."""
-    create_audit_entry({
-        "action": "eligibility_checked",
-        "agent": "recipient",
-        "entity_type": "pantry",
-        "entity_id": pantry_id,
-        "details": {"household_size": household_size, "zip_code": zip_code},
-    })
+    """Check if someone is eligible for services at a specific pantry.
+
+    Returns requirements and does not fabricate an eligibility determination;
+    eligibility is only asserted when the pantry registry carries it.
+    """
+    settings = get_settings()
+    pantry = {}
+    if settings.pantries_table:
+        dynamodb = boto3.resource("dynamodb", region_name=settings.aws_region)
+        resp = dynamodb.Table(settings.pantries_table).get_item(Key={"id": pantry_id})
+        pantry = resp.get("Item", {})
+
+    create_audit_entry(
+        {
+            "action": "eligibility_checked",
+            "agent": "recipient",
+            "entity_type": "pantry",
+            "entity_id": pantry_id,
+            "details": {"household_size": household_size, "zip_code": zip_code},
+        }
+    )
+
+    if not pantry:
+        return {
+            "pantry_id": pantry_id,
+            "eligible": None,
+            "data_available": False,
+            "message": "No eligibility data on record for this pantry.",
+            "requirements": [],
+            "household_size": household_size,
+        }
 
     return {
         "pantry_id": pantry_id,
-        "eligible": True,
-        "requirements": [
+        "eligible": bool(pantry.get("eligibility_checked")),
+        "requirements": pantry.get("requirements")
+        or [
             "Photo ID or proof of address",
             "Self-declaration of need (no income verification required)",
         ],
-        "next_steps": "Walk in during operating hours. No appointment needed.",
+        "next_steps": pantry.get("next_steps", "Contact the pantry for intake details."),
         "household_size": household_size,
     }
 
@@ -127,7 +187,9 @@ def list_available_items(pantry_id: str) -> dict:
 
     return {
         "pantry_id": pantry_id,
-        "categories": categories if categories else {"produce": [], "protein": [], "dairy": [], "bakery": [], "canned": []},
+        "categories": categories
+        if categories
+        else {"produce": [], "protein": [], "dairy": [], "bakery": [], "canned": []},
         "total_items": sum(len(v) for v in categories.values()),
     }
 
@@ -166,7 +228,7 @@ def translate_response(
             "confidence": 0.95,
             "engine": "amazon-translate",
         }
-    except Exception:
+    except (ClientError, BotoCoreError):
         return {
             "original_text": text,
             "translated_text": text,
@@ -185,7 +247,7 @@ def submit_recipient_request(
     latitude: float = 0.0,
     longitude: float = 0.0,
     household_size: int = 1,
-    dietary_restrictions: list[str] = None,
+    dietary_restrictions: list[str] | None = None,
 ) -> dict:
     """Submit and store a recipient request in DynamoDB."""
     if dietary_restrictions is None:
@@ -204,15 +266,18 @@ def submit_recipient_request(
     }
 
     from haven.db import create_recipient_request as db_create
+
     db_create(record)
 
-    create_event({
-        "id": str(uuid.uuid4()),
-        "event_type": "recipient_request",
-        "source": "recipient_agent",
-        "payload": {"request_id": record["id"], "language": language},
-        "urgency": "high",
-    })
+    create_event(
+        {
+            "id": str(uuid.uuid4()),
+            "event_type": "recipient_request",
+            "source": "recipient_agent",
+            "payload": {"request_id": record["id"], "language": language},
+            "urgency": "high",
+        }
+    )
 
     return {
         "request_id": record["id"],

@@ -25,17 +25,19 @@ def parse_donation_offer(
     donor_email: str = "",
     address: str = "",
     expires_at: str = "",
+    offer_id: str = "",
 ) -> dict:
     """Parse and validate a new donation offer from a donor.
 
     Analyzes the offer details, determines category, and creates
     a structured donation record in DynamoDB.
+
+    When ``offer_id`` is provided (e.g. the supervisor already persisted the
+    record), the existing record is updated instead of creating a duplicate.
     """
     import uuid
 
-    donation_id = str(uuid.uuid4())
-    record = create_donation({
-        "id": donation_id,
+    fields = {
         "donor_name": donor_name,
         "donor_phone": donor_phone,
         "donor_email": donor_email,
@@ -46,14 +48,23 @@ def parse_donation_offer(
         "address": address,
         "status": DonationStatus.OFFERED.value,
         "notes": "",
-    })
-    create_event({
-        "id": str(uuid.uuid4()),
-        "event_type": "donation_offer",
-        "source": "donor_agent",
-        "payload": {"donation_id": donation_id, "donor_name": donor_name, "category": category},
-        "urgency": "medium",
-    })
+    }
+    if offer_id:
+        donation_id = offer_id
+        updated = update_donation(offer_id, fields)
+        record = updated if updated is not None else {"id": offer_id, **fields}
+    else:
+        donation_id = str(uuid.uuid4())
+        record = create_donation({"id": donation_id, **fields})
+    create_event(
+        {
+            "id": str(uuid.uuid4()),
+            "event_type": "donation_offer",
+            "source": "donor_agent",
+            "payload": {"donation_id": donation_id, "donor_name": donor_name, "category": category},
+            "urgency": "medium",
+        }
+    )
     return {
         "offer_id": record["id"],
         "status": "parsed",
@@ -87,10 +98,13 @@ def check_cold_chain_requirements(
     if requires_refrigeration:
         assessment["required"] = True
 
-    update_donation(offer_id, {
-        "cold_chain_required": assessment["required"],
-        "temperature_range": assessment["temp"],
-    })
+    update_donation(
+        offer_id,
+        {
+            "cold_chain_required": assessment["required"],
+            "temperature_range": assessment["temp"],
+        },
+    )
 
     return {
         "offer_id": offer_id,
@@ -112,13 +126,15 @@ def accept_donation(offer_id: str, notes: str = "") -> dict:
     if not donation:
         return {"error": f"Donation {offer_id} not found"}
     update_donation(offer_id, {"status": DonationStatus.ACCEPTED.value, "notes": notes})
-    create_audit_entry({
-        "action": "donation_accepted",
-        "agent": "donor",
-        "entity_type": "donation",
-        "entity_id": offer_id,
-        "details": {"donor_name": donation.get("donor_name", ""), "notes": notes},
-    })
+    create_audit_entry(
+        {
+            "action": "donation_accepted",
+            "agent": "donor",
+            "entity_type": "donation",
+            "entity_id": offer_id,
+            "details": {"donor_name": donation.get("donor_name", ""), "notes": notes},
+        }
+    )
     return {
         "offer_id": offer_id,
         "status": DonationStatus.ACCEPTED.value,
@@ -151,8 +167,7 @@ def negotiate_pickup_time(
     return {
         "offer_id": offer_id,
         "proposed_time": recommendation,
-        "message": f"Pickup window proposed for {donor_name}: {recommendation}. "
-        f"Waiting for donor confirmation.",
+        "message": f"Pickup window proposed for {donor_name}: {recommendation}. Waiting for donor confirmation.",
         "priority": "normal",
     }
 
@@ -181,13 +196,15 @@ def generate_tax_receipt(
         "organization_ein": "XX-XXXXXXX",
         "format": "PDF-ready",
     }
-    create_audit_entry({
-        "action": "tax_receipt_generated",
-        "agent": "donor",
-        "entity_type": "receipt",
-        "entity_id": receipt_id,
-        "details": receipt,
-    })
+    create_audit_entry(
+        {
+            "action": "tax_receipt_generated",
+            "agent": "donor",
+            "entity_type": "receipt",
+            "entity_id": receipt_id,
+            "details": receipt,
+        }
+    )
     return {
         "offer_id": offer_id,
         "receipt": receipt,

@@ -9,9 +9,9 @@ from strands import tool
 from haven.db import (
     create_audit_entry,
     create_event,
+    get_donation_stats,
     list_audit_entries,
     list_donations,
-    list_events,
     list_recipient_requests,
     list_volunteers,
 )
@@ -25,11 +25,13 @@ def generate_usda_report(
     total_meals_served: int,
     unique_recipients: int,
 ) -> dict:
-    """Generate a USDA TEFAP compliance report.
+    """Generate a draft USDA TEFAP compliance report.
 
-    Creates an electronic report meeting USDA requirements.
+    The report is a draft until it is validated and submitted through the
+    USDA portal; this tool does not submit anywhere.
     """
     report_id = f"USDA-{uuid.uuid4().hex[:8].upper()}"
+    validated = bool(reporting_period and organization_id and total_meals_served >= 0)
     report = {
         "report_id": report_id,
         "period": reporting_period,
@@ -40,26 +42,31 @@ def generate_usda_report(
             "unique_recipients": unique_recipients,
             "pounds_per_meal": round(total_pounds_distributed / max(total_meals_served, 1), 2),
         },
-        "compliance_status": "compliant",
-        "submission_ready": True,
-        "format": "USDA-TEFAP-electronic",
+        "compliance_status": "draft" if validated else "incomplete",
+        "submission_ready": False,
+        "format": "USDA-TEFAP-electronic-draft",
+        "message": "Draft created locally. Validate and submit through the USDA portal.",
     }
 
-    create_audit_entry({
-        "action": "usda_report_generated",
-        "agent": "compliance",
-        "entity_type": "report",
-        "entity_id": report_id,
-        "details": report,
-    })
+    create_audit_entry(
+        {
+            "action": "usda_report_generated",
+            "agent": "compliance",
+            "entity_type": "report",
+            "entity_id": report_id,
+            "details": report,
+        }
+    )
 
-    create_event({
-        "id": str(uuid.uuid4()),
-        "event_type": "compliance_report",
-        "source": "compliance_agent",
-        "payload": {"report_id": report_id, "period": reporting_period},
-        "urgency": "low",
-    })
+    create_event(
+        {
+            "id": str(uuid.uuid4()),
+            "event_type": "compliance_report_draft",
+            "source": "compliance_agent",
+            "payload": {"report_id": report_id, "period": reporting_period},
+            "urgency": "low",
+        }
+    )
 
     return report
 
@@ -75,28 +82,32 @@ def log_food_safety_event(
     """Log a food safety event for compliance tracking in DynamoDB."""
     event_id = f"SAFETY-{uuid.uuid4().hex[:8].upper()}"
 
-    create_audit_entry({
-        "action": "food_safety_event",
-        "agent": "compliance",
-        "entity_type": "safety_event",
-        "entity_id": event_id,
-        "details": {
-            "event_type": event_type,
-            "description": description,
-            "severity": severity,
-            "affected_items": affected_items,
-            "corrective_action": corrective_action or "Pending review",
-        },
-    })
+    create_audit_entry(
+        {
+            "action": "food_safety_event",
+            "agent": "compliance",
+            "entity_type": "safety_event",
+            "entity_id": event_id,
+            "details": {
+                "event_type": event_type,
+                "description": description,
+                "severity": severity,
+                "affected_items": affected_items,
+                "corrective_action": corrective_action or "Pending review",
+            },
+        }
+    )
 
     if severity in ("high", "critical"):
-        create_event({
-            "id": str(uuid.uuid4()),
-            "event_type": "food_safety_alert",
-            "source": "compliance_agent",
-            "payload": {"event_id": event_id, "severity": severity, "description": description},
-            "urgency": severity,
-        })
+        create_event(
+            {
+                "id": str(uuid.uuid4()),
+                "event_type": "food_safety_alert",
+                "source": "compliance_agent",
+                "payload": {"event_id": event_id, "severity": severity, "description": description},
+                "urgency": severity,
+            }
+        )
 
     return {
         "event_id": event_id,
@@ -104,9 +115,11 @@ def log_food_safety_event(
         "severity": severity,
         "affected_items": affected_items,
         "logged": True,
-        "notification_sent": severity in ("high", "critical"),
+        "notification_sent": False,
+        "system_alert_logged": severity in ("high", "critical"),
         "corrective_action": corrective_action or "Pending review",
         "follow_up_required": True,
+        "message": "Event logged. Human notification/incident response is not automated.",
     }
 
 
@@ -127,13 +140,15 @@ def generate_tax_receipt_batch(
             "organization_ein": organization_ein,
         }
         receipts.append(receipt)
-        create_audit_entry({
-            "action": "tax_receipt_batch_item",
-            "agent": "compliance",
-            "entity_type": "receipt",
-            "entity_id": receipt["receipt_id"],
-            "details": receipt,
-        })
+        create_audit_entry(
+            {
+                "action": "tax_receipt_batch_item",
+                "agent": "compliance",
+                "entity_type": "receipt",
+                "entity_id": receipt["receipt_id"],
+                "details": receipt,
+            }
+        )
 
     return {
         "batch_size": len(receipts),
@@ -152,13 +167,15 @@ def audit_trail(
     details: dict,
 ) -> dict:
     """Record an audit trail entry for compliance tracking."""
-    entry = create_audit_entry({
-        "action": action,
-        "agent": agent,
-        "entity_type": entity_type,
-        "entity_id": entity_id,
-        "details": details,
-    })
+    entry = create_audit_entry(
+        {
+            "action": action,
+            "agent": agent,
+            "entity_type": entity_type,
+            "entity_id": entity_id,
+            "details": details,
+        }
+    )
 
     return {
         "audit_id": entry.get("timestamp", ""),
@@ -168,7 +185,8 @@ def audit_trail(
         "entity_id": entity_id,
         "details": details,
         "logged": True,
-        "immutable": True,
+        "immutable": False,
+        "note": "Audit entries are append-only by convention; DynamoDB does not enforce immutability.",
     }
 
 
@@ -186,27 +204,24 @@ def get_audit_log(limit: int = 20) -> dict:
 def get_compliance_summary() -> dict:
     """Get a summary of compliance status across the organization.
 
-    Aggregates data from all tables for a compliance overview.
+    Aggregates data from all tables for a compliance overview. Pounds are
+    counted only from explicit lb/lbs/pound quantities to avoid miscounts.
     """
     donations = list_donations(limit=1000)
     volunteers = list_volunteers(limit=1000)
     recipients = list_recipient_requests(limit=1000)
     audit_entries = list_audit_entries(limit=1000)
 
-    total_value = 0.0
-    for d in donations:
-        try:
-            qty = float("".join(c for c in d.get("quantity", "0").split()[0] if c.isdigit() or c == "."))
-            total_value += qty
-        except (ValueError, IndexError):
-            pass
+    stats = get_donation_stats()
 
     return {
         "total_donations": len(donations),
         "total_volunteers": len(volunteers),
         "total_recipient_requests": len(recipients),
         "total_audit_entries": len(audit_entries),
-        "estimated_total_value": round(total_value, 2),
-        "compliance_status": "compliant",
+        "total_lbs_counted": stats["total_lbs"],
+        "total_lbs_note": stats["total_lbs_note"],
+        "compliance_status": "pending_review",
         "last_audit": audit_entries[0] if audit_entries else None,
+        "message": "Summary is informational. Formal compliance status requires human review.",
     }

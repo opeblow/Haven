@@ -1,56 +1,85 @@
 import * as cdk from "aws-cdk-lib";
-import * as dynamodb from "aws-cdk-lib/dynamodb";
-import * as s3 from "aws-cdk-lib/s3";
-import * as lambda from "aws-cdk-lib/aws-lambda";
+import * as dynamodb from "aws-cdk-lib/aws-dynamodb";
+import * as s3 from "aws-cdk-lib/aws-s3";
 import * as apigateway from "aws-cdk-lib/aws-apigateway";
 import * as cognito from "aws-cdk-lib/aws-cognito";
-import * as iam from "aws-cdk-lib/aws-iam";
 import * as events from "aws-cdk-lib/aws-events";
-import * as targets from "aws-cdk-lib/aws-events-targets";
 import * as logs from "aws-cdk-lib/aws-logs";
 import { Construct } from "constructs";
+
+/**
+ * Shared mock integration for API methods that are not yet wired to a real
+ * backend. The FastAPI agent service is not deployed by this stack yet; wire
+ * these methods to a Lambda proxy / HTTP integration once the service exists.
+ */
+const pendingBackendIntegration = {
+  integration: new apigateway.MockIntegration({
+    integrationResponses: [{ statusCode: "200" }],
+    passthroughBehavior: apigateway.PassthroughBehavior.NEVER,
+    requestTemplates: {
+      "application/json": "{ \"statusCode\": 200 }",
+    },
+  }),
+};
 
 export class HavenStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, props);
 
     // === DynamoDB Tables ===
+    // NOTE: the events table uses `created_at` as its sort key to match the
+    // Haven DB layer (`haven/db.py`). Keep the two in sync if you rename it.
     const donationsTable = new dynamodb.Table(this, "DonationsTable", {
       tableName: "haven-donations",
       partitionKey: { name: "id", type: dynamodb.AttributeType.STRING },
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
       timeToLiveAttribute: "ttl",
-      pointInTimeRecovery: true,
+      pointInTimeRecoverySpecification: { pointInTimeRecoveryEnabled: true },
+    });
+    donationsTable.addGlobalSecondaryIndex({
+      indexName: "status-index",
+      partitionKey: { name: "status", type: dynamodb.AttributeType.STRING },
+      projectionType: dynamodb.ProjectionType.ALL,
     });
 
     const volunteersTable = new dynamodb.Table(this, "VolunteersTable", {
       tableName: "haven-volunteers",
       partitionKey: { name: "id", type: dynamodb.AttributeType.STRING },
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
-      pointInTimeRecovery: true,
+      pointInTimeRecoverySpecification: { pointInTimeRecoveryEnabled: true },
+    });
+    volunteersTable.addGlobalSecondaryIndex({
+      indexName: "status-index",
+      partitionKey: { name: "status", type: dynamodb.AttributeType.STRING },
+      projectionType: dynamodb.ProjectionType.ALL,
     });
 
     const recipientsTable = new dynamodb.Table(this, "RecipientsTable", {
       tableName: "haven-recipients",
       partitionKey: { name: "id", type: dynamodb.AttributeType.STRING },
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
-      pointInTimeRecovery: true,
+      pointInTimeRecoverySpecification: { pointInTimeRecoveryEnabled: true },
     });
 
     const shiftsTable = new dynamodb.Table(this, "ShiftsTable", {
       tableName: "haven-shifts",
       partitionKey: { name: "id", type: dynamodb.AttributeType.STRING },
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
-      pointInTimeRecovery: true,
+      pointInTimeRecoverySpecification: { pointInTimeRecoveryEnabled: true },
+    });
+    shiftsTable.addGlobalSecondaryIndex({
+      indexName: "status-index",
+      partitionKey: { name: "status", type: dynamodb.AttributeType.STRING },
+      projectionType: dynamodb.ProjectionType.ALL,
     });
 
     const eventsTable = new dynamodb.Table(this, "EventsTable", {
       tableName: "haven-events",
       partitionKey: { name: "id", type: dynamodb.AttributeType.STRING },
-      sortKey: { name: "createdAt", type: dynamodb.AttributeType.STRING },
+      sortKey: { name: "created_at", type: dynamodb.AttributeType.STRING },
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
       timeToLiveAttribute: "ttl",
-      pointInTimeRecovery: true,
+      pointInTimeRecoverySpecification: { pointInTimeRecoveryEnabled: true },
     });
 
     const auditTable = new dynamodb.Table(this, "AuditTable", {
@@ -58,7 +87,7 @@ export class HavenStack extends cdk.Stack {
       partitionKey: { name: "id", type: dynamodb.AttributeType.STRING },
       sortKey: { name: "timestamp", type: dynamodb.AttributeType.STRING },
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
-      pointInTimeRecovery: true,
+      pointInTimeRecoverySpecification: { pointInTimeRecoveryEnabled: true },
     });
 
     // === S3 Bucket ===
@@ -110,23 +139,30 @@ export class HavenStack extends cdk.Stack {
       },
     });
 
-    const health = api.root.addResource("api").addResource("health");
-    health.addMethod("GET");
+    // Create the shared "/api" resource once; re-adding it under the same
+    // construct parent for each route caused a CDK "name already exists" error.
+    const apiResource = api.root.addResource("api");
 
-    const donations = api.root.addResource("api").addResource("donations");
-    donations.addResource("offer").addMethod("POST");
+    const health = apiResource.addResource("health");
+    health.addMethod("GET", pendingBackendIntegration.integration);
 
-    const recipients = api.root.addResource("api").addResource("recipients");
-    recipients.addResource("request").addMethod("POST");
+    const donations = apiResource.addResource("donations");
+    donations.addMethod("GET", pendingBackendIntegration.integration);
+    donations.addResource("offer").addMethod("POST", pendingBackendIntegration.integration);
 
-    const volunteers = api.root.addResource("api").addResource("volunteers");
-    volunteers.addResource("inquiry").addMethod("POST");
+    const recipients = apiResource.addResource("recipients");
+    recipients.addMethod("GET", pendingBackendIntegration.integration);
+    recipients.addResource("request").addMethod("POST", pendingBackendIntegration.integration);
 
-    const eventsFeed = api.root.addResource("api").addResource("events");
-    eventsFeed.addResource("feed").addMethod("GET");
+    const volunteers = apiResource.addResource("volunteers");
+    volunteers.addMethod("GET", pendingBackendIntegration.integration);
+    volunteers.addResource("inquiry").addMethod("POST", pendingBackendIntegration.integration);
 
-    const stats = api.root.addResource("api").addResource("stats");
-    stats.addMethod("GET");
+    const eventsFeed = apiResource.addResource("events");
+    eventsFeed.addResource("feed").addMethod("GET", pendingBackendIntegration.integration);
+
+    const stats = apiResource.addResource("stats");
+    stats.addMethod("GET", pendingBackendIntegration.integration);
 
     // === EventBridge ===
     const eventBus = new events.EventBus(this, "HavenEventBus", {

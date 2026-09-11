@@ -99,8 +99,13 @@ export interface DashboardStats {
 }
 
 async function apiFetch<T>(path: string, options?: RequestInit): Promise<T> {
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  const apiKey = process.env.NEXT_PUBLIC_HAVEN_API_KEY;
+  if (apiKey) {
+    headers["X-API-Key"] = apiKey;
+  }
   const res = await fetch(`${API_BASE}${path}`, {
-    headers: { "Content-Type": "application/json" },
+    headers,
     ...options,
   });
   if (!res.ok) {

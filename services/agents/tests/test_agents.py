@@ -2,11 +2,9 @@
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
-
-from haven.models import AgentEvent, UrgencyLevel
 
 
 class TestSupervisor:
@@ -14,6 +12,7 @@ class TestSupervisor:
     def supervisor(self, mock_dynamodb):
         with patch("haven.agents.supervisor.Agent"):
             from haven.agents.supervisor import Supervisor
+
             s = Supervisor()
             return s
 
@@ -27,9 +26,7 @@ class TestSupervisor:
         assert "logistics" in result
 
     def test_parse_routing_decision_prose(self, supervisor):
-        result = supervisor._parse_routing_decision(
-            "I'll route this to the volunteer agent for matching."
-        )
+        result = supervisor._parse_routing_decision("I'll route this to the volunteer agent for matching.")
         assert "volunteer" in result
 
     def test_parse_routing_decision_fallback(self, supervisor):
@@ -37,13 +34,12 @@ class TestSupervisor:
         assert result == ["donor", "compliance"]
 
     def test_parse_routing_decision_all_agents(self, supervisor):
-        result = supervisor._parse_routing_decision(
-            "donor, volunteer, recipient, logistics, compliance"
-        )
+        result = supervisor._parse_routing_decision("donor, volunteer, recipient, logistics, compliance")
         assert len(result) == 5
 
     def test_get_status(self, supervisor):
         import asyncio
+
         status = asyncio.run(supervisor.get_status())
         assert status["supervisor"] == "active"
         assert status["uptime"] == "operational"

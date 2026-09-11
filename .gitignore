@@ -10,6 +10,7 @@ out/
 build/
 *.tsbuildinfo
 .turbo/
+cdk.out/
 
 # Python
 __pycache__/
@@ -24,6 +25,7 @@ __pycache__/
 .pytest_cache/
 .coverage
 htmlcov/
+.venv/
 
 # Environment & secrets
 .env

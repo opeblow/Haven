@@ -44,43 +44,50 @@ def match_volunteer(
     volunteer_location: str,
     shift_requirements: list[str],
 ) -> dict:
-    """Match a volunteer to a shift based on skills and history.
+    """Match a volunteer to a shift based on the provided skills/requirements.
 
-    Calculates a match quality score and updates DynamoDB records.
+    The score uses the skills and requirements passed in this call, not
+    stored profiles, because the stored records do not yet carry skill data.
+    An SMS offer is NOT sent from this tool; it only stages the match.
     """
     skill_overlap = len(set(volunteer_skills) & set(shift_requirements))
     total_requirements = max(len(shift_requirements), 1)
     score = (skill_overlap / total_requirements) * 100
 
-    offer_sent = score >= 50
-    if offer_sent:
+    offer_staged = score >= 50
+    if offer_staged:
         volunteer = get_volunteer(volunteer_id)
         if volunteer:
             update_volunteer(volunteer_id, {"status": "matched"})
         shift = get_shift(shift_id)
         if shift:
             assigned = shift.get("volunteers_assigned", [])
-            assigned.append(volunteer_id)
+            if volunteer_id not in assigned:
+                assigned.append(volunteer_id)
             new_status = "filled" if len(assigned) >= shift.get("volunteers_needed", 1) else "open"
             update_shift(shift_id, {"volunteers_assigned": assigned, "status": new_status})
 
-    create_audit_entry({
-        "action": "volunteer_match",
-        "agent": "volunteer",
-        "entity_type": "shift",
-        "entity_id": shift_id,
-        "details": {"volunteer_id": volunteer_id, "match_score": round(score), "offer_sent": offer_sent},
-    })
+    create_audit_entry(
+        {
+            "action": "volunteer_match",
+            "agent": "volunteer",
+            "entity_type": "shift",
+            "entity_id": shift_id,
+            "details": {"volunteer_id": volunteer_id, "match_score": round(score), "offer_staged": offer_staged},
+        }
+    )
 
     return {
         "shift_id": shift_id,
         "volunteer_id": volunteer_id,
         "match_score": round(score),
         "skill_match": skill_overlap,
-        "offer_sent": offer_sent,
+        "offer_staged": offer_staged,
+        "offer_sent": False,
         "message": (
-            f"Match offer sent to volunteer {volunteer_id} for shift {shift_id}"
-            if offer_sent
+            f"Match staged for volunteer {volunteer_id} on shift {shift_id}. "
+            "Send an SMS offer via send_shift_offer_sms before considering it accepted."
+            if offer_staged
             else f"Match score {score}% too low. Looking for better candidates."
         ),
     }
@@ -96,7 +103,8 @@ def send_shift_offer_sms(
 ) -> dict:
     """Send an SMS shift offer to a volunteer via Twilio.
 
-    Falls back gracefully if Twilio is not configured.
+    Only reports 'sent' when Twilio confirms delivery. There is no durable
+    outbound queue, so an unconfigured or failed send is reported honestly.
     """
     from haven.config import get_settings
 
@@ -108,8 +116,10 @@ def send_shift_offer_sms(
     )
 
     twilio_sid = None
+    twilio_error = None
     if settings.twilio_account_sid and settings.twilio_auth_token:
         try:
+            from twilio.base.exceptions import TwilioRestException
             from twilio.rest import Client
 
             client = Client(settings.twilio_account_sid, settings.twilio_auth_token)
@@ -119,22 +129,34 @@ def send_shift_offer_sms(
                 to=volunteer_phone,
             )
             twilio_sid = sms.sid
-        except Exception as e:
-            twilio_sid = f"error: {e}"
+        except (ImportError, TwilioRestException) as e:
+            twilio_error = f"{type(e).__name__}: {e}"
 
-    create_event({
-        "id": str(uuid.uuid4()),
-        "event_type": "shift_offer_sent",
-        "source": "volunteer_agent",
-        "payload": {"phone": volunteer_phone, "pantry_name": pantry_name},
-        "urgency": "low",
-    })
+    if twilio_sid:
+        status = "sent"
+    elif twilio_error:
+        status = "failed"
+    else:
+        status = "not_configured"
+
+    create_event(
+        {
+            "id": str(uuid.uuid4()),
+            "event_type": "shift_offer_sms",
+            "source": "volunteer_agent",
+            "payload": {"phone": volunteer_phone, "pantry_name": pantry_name, "status": status},
+            "urgency": "low",
+        }
+    )
 
     return {
         "phone": volunteer_phone,
         "message": message,
-        "status": "sent" if twilio_sid and not str(twilio_sid).startswith("error") else "queued",
-        "twilio_sid": twilio_sid or "not_configured",
+        "status": status,
+        "twilio_sid": twilio_sid or "",
+        "error": twilio_error or "",
+        "durable_queue": False,
+        "next_step": "Retry via the outbound channel once Twilio is configured." if status != "sent" else "",
     }
 
 
@@ -153,21 +175,23 @@ def handle_no_show(volunteer_id: str, shift_id: str) -> dict:
             assigned.remove(volunteer_id)
         update_shift(shift_id, {"volunteers_assigned": assigned, "status": "open"})
 
-    create_audit_entry({
-        "action": "volunteer_no_show",
-        "agent": "volunteer",
-        "entity_type": "volunteer",
-        "entity_id": volunteer_id,
-        "details": {"shift_id": shift_id, "total_no_shows": new_no_shows},
-    })
+    create_audit_entry(
+        {
+            "action": "volunteer_no_show",
+            "agent": "volunteer",
+            "entity_type": "volunteer",
+            "entity_id": volunteer_id,
+            "details": {"shift_id": shift_id, "total_no_shows": new_no_shows},
+        }
+    )
 
     return {
         "volunteer_id": volunteer_id,
         "shift_id": shift_id,
         "action": "no_show_logged",
         "volunteer_warned": new_no_shows >= 2,
-        "backfill_triggered": True,
-        "message": "No-show logged. Attempting to find replacement volunteer.",
+        "backfill_triggered": False,
+        "message": "No-show logged. Shift reopened; a replacement volunteer is not yet selected.",
     }
 
 

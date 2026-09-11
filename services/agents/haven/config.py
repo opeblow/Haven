@@ -12,8 +12,11 @@ class Settings(BaseSettings):
 
     # AWS
     aws_region: str = "us-east-1"
-    bedrock_model_id: str = "anthropic.claude-sonnet-4-5-20250514-v1:0"
+    bedrock_model_id: str = "anthropic.claude-sonnet-4-5-20250929-v1:0"
     bedrock_routing_model_id: str = "amazon.nova-micro-v1:0"
+
+    # API
+    api_key: str = ""
 
     # DynamoDB
     donations_table: str = "haven-donations"
@@ -22,6 +25,7 @@ class Settings(BaseSettings):
     shifts_table: str = "haven-shifts"
     events_table: str = "haven-events"
     audit_table: str = "haven-audit"
+    pantries_table: str = ""
     dynamodb_endpoint_url: str = ""
 
     # S3

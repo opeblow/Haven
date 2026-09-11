@@ -126,7 +126,7 @@ export default function RecipientsPage() {
               </div>
 
               <div className="bg-haven-surface rounded-lg p-4 mb-3">
-                <p className="text-sm italic text-haven-text">"{req.request_text}"</p>
+                <p className="text-sm italic text-haven-text">&quot;{req.request_text}&quot;</p>
               </div>
 
               <div className="flex items-center justify-between text-xs text-haven-muted">

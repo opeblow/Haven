@@ -2,21 +2,19 @@
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch
-
-import pytest
-
 
 class TestDonationDB:
     def test_create_donation(self, mock_dynamodb):
         from haven.db import create_donation
 
         _, mock_table = mock_dynamodb
-        result = create_donation({
-            "id": "don-001",
-            "donor_name": "Green Farms",
-            "category": "produce",
-        })
+        result = create_donation(
+            {
+                "id": "don-001",
+                "donor_name": "Green Farms",
+                "category": "produce",
+            }
+        )
 
         assert mock_table.put_item.called
         assert result["donor_name"] == "Green Farms"
@@ -45,7 +43,7 @@ class TestDonationDB:
         from haven.db import update_donation
 
         _, mock_table = mock_dynamodb
-        mock_table.get_item.return_value = {"Item": {"id": "don-001", "status": "accepted"}}
+        mock_table.get_item.return_value = {"Item": {"id": "don-001", "status": "in_transit"}}
 
         result = update_donation("don-001", {"status": "in_transit"})
         assert mock_table.update_item.called
@@ -96,11 +94,13 @@ class TestEventDB:
         from haven.db import create_event
 
         _, mock_table = mock_dynamodb
-        result = create_event({
-            "id": "evt-001",
-            "event_type": "donation_offer",
-            "source": "donor_agent",
-        })
+        result = create_event(
+            {
+                "id": "evt-001",
+                "event_type": "donation_offer",
+                "source": "donor_agent",
+            }
+        )
 
         assert mock_table.put_item.called
         assert result["event_type"] == "donation_offer"
@@ -109,7 +109,9 @@ class TestEventDB:
         from haven.db import list_events
 
         _, mock_table = mock_dynamodb
-        mock_table.scan.return_value = {"Items": [{"id": "1", "created_at": "2026-09-10"}, {"id": "2", "created_at": "2026-09-11"}]}
+        mock_table.scan.return_value = {
+            "Items": [{"id": "1", "created_at": "2026-09-10"}, {"id": "2", "created_at": "2026-09-11"}]
+        }
 
         result = list_events()
         assert len(result) == 2
@@ -121,12 +123,14 @@ class TestAuditDB:
         from haven.db import create_audit_entry
 
         _, mock_table = mock_dynamodb
-        result = create_audit_entry({
-            "action": "donation_accepted",
-            "agent": "donor",
-            "entity_type": "donation",
-            "entity_id": "don-001",
-        })
+        result = create_audit_entry(
+            {
+                "action": "donation_accepted",
+                "agent": "donor",
+                "entity_type": "donation",
+                "entity_id": "don-001",
+            }
+        )
 
         assert mock_table.put_item.called
         assert result["action"] == "donation_accepted"

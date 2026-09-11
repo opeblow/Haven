@@ -2,14 +2,61 @@
 
 from __future__ import annotations
 
-import json
-from datetime import datetime, timezone
-from typing import Any
+import uuid
+from datetime import UTC, datetime
+from decimal import Decimal
+from typing import Any, cast
 
 import boto3
 from boto3.dynamodb.conditions import Key
 
 from haven.config import get_settings
+
+
+def _encode_value(value: Any) -> Any:
+    """Recursively coerce Python types to values boto3/DynamoDB accepts.
+
+    boto3's type serializer rejects raw ``float`` and ``datetime`` values, so
+    floats become ``Decimal`` (DynamoDB's only numeric type) and datetimes
+    become ISO strings before any write.
+    """
+    if value is None or isinstance(value, (str, int, bool, Decimal)):
+        return value
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, float):
+        return Decimal(str(value))
+    if isinstance(value, dict):
+        return {k: _encode_value(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [_encode_value(v) for v in value]
+    return value
+
+
+def _encode_item(record: dict) -> dict:
+    """Encode a whole record dict before a DynamoDB write."""
+    return {k: _encode_value(v) for k, v in record.items()}
+
+
+def _extract_pounds(quantity: str) -> float | None:
+    """Extract a pounds figure only when the quantity is explicitly lb/lbs/pound.
+
+    Free-text quantities without an explicit weight unit are NOT counted so a
+    value like "20 boxes" is never reported as 20 pounds distributed.
+    """
+    text = (quantity or "").strip().lower()
+    if not text:
+        return None
+    if not any(u in text for u in ("lb", "pound")):
+        return None
+    cleaned = ""
+    for ch in text.split()[0]:
+        if ch.isdigit() or ch == ".":
+            cleaned += ch
+    try:
+        return float(cleaned)
+    except ValueError:
+        return None
 
 
 def get_dynamodb_resource():
@@ -29,7 +76,7 @@ def get_table(table_name: str):
 
 
 def _now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 # ── Donations ──────────────────────────────────────────────────────────────
@@ -40,7 +87,7 @@ def create_donation(donation: dict) -> dict:
     settings = get_settings()
     table = get_table(settings.donations_table)
     record = {**donation, "created_at": _now_iso(), "updated_at": _now_iso()}
-    table.put_item(Item=record)
+    table.put_item(Item=_encode_item(record))
     return record
 
 
@@ -49,7 +96,7 @@ def get_donation(donation_id: str) -> dict | None:
     settings = get_settings()
     table = get_table(settings.donations_table)
     resp = table.get_item(Key={"id": donation_id})
-    return resp.get("Item")
+    return cast("dict[str, Any] | None", resp.get("Item"))
 
 
 def update_donation(donation_id: str, updates: dict) -> dict | None:
@@ -70,7 +117,7 @@ def update_donation(donation_id: str, updates: dict) -> dict | None:
         Key={"id": donation_id},
         UpdateExpression="SET " + ", ".join(expr_parts),
         ExpressionAttributeNames=expr_names,
-        ExpressionAttributeValues=expr_values,
+        ExpressionAttributeValues=_encode_item(expr_values),
     )
     return get_donation(donation_id)
 
@@ -88,7 +135,7 @@ def list_donations(status: str | None = None, limit: int = 50) -> list[dict]:
         )
     else:
         resp = table.scan(Limit=limit)
-    return resp.get("Items", [])
+    return cast("list[dict[str, Any]]", resp.get("Items", []))
 
 
 def get_donation_stats() -> dict:
@@ -100,19 +147,22 @@ def get_donation_stats() -> dict:
     total = len(items)
     by_status: dict[str, int] = {}
     total_lbs = 0.0
+    explicit_lbs_items = 0
     for item in items:
         s = item.get("status", "unknown")
         by_status[s] = by_status.get(s, 0) + 1
-        qty = item.get("quantity", "")
-        try:
-            num = float("".join(c for c in qty.split()[0] if c.isdigit() or c == "."))
-            total_lbs += num
-        except (ValueError, IndexError):
-            pass
+        lbs = _extract_pounds(item.get("quantity", ""))
+        if lbs is not None:
+            total_lbs += lbs
+            explicit_lbs_items += 1
     return {
         "total_donations": total,
         "by_status": by_status,
         "total_lbs": round(total_lbs, 1),
+        "total_lbs_note": (
+            f"Based on {explicit_lbs_items} of {total} donations with explicit lbs; "
+            "non-weight quantities are not counted."
+        ),
     }
 
 
@@ -124,7 +174,7 @@ def create_volunteer(volunteer: dict) -> dict:
     settings = get_settings()
     table = get_table(settings.volunteers_table)
     record = {**volunteer, "created_at": _now_iso()}
-    table.put_item(Item=record)
+    table.put_item(Item=_encode_item(record))
     return record
 
 
@@ -133,7 +183,7 @@ def get_volunteer(volunteer_id: str) -> dict | None:
     settings = get_settings()
     table = get_table(settings.volunteers_table)
     resp = table.get_item(Key={"id": volunteer_id})
-    return resp.get("Item")
+    return cast("dict[str, Any] | None", resp.get("Item"))
 
 
 def update_volunteer(volunteer_id: str, updates: dict) -> dict | None:
@@ -153,7 +203,7 @@ def update_volunteer(volunteer_id: str, updates: dict) -> dict | None:
         Key={"id": volunteer_id},
         UpdateExpression="SET " + ", ".join(expr_parts),
         ExpressionAttributeNames=expr_names,
-        ExpressionAttributeValues=expr_values,
+        ExpressionAttributeValues=_encode_item(expr_values),
     )
     return get_volunteer(volunteer_id)
 
@@ -171,7 +221,7 @@ def list_volunteers(status: str | None = None, limit: int = 50) -> list[dict]:
         )
     else:
         resp = table.scan(Limit=limit)
-    return resp.get("Items", [])
+    return cast("list[dict[str, Any]]", resp.get("Items", []))
 
 
 # ── Recipient Requests ─────────────────────────────────────────────────────
@@ -182,7 +232,7 @@ def create_recipient_request(request: dict) -> dict:
     settings = get_settings()
     table = get_table(settings.recipients_table)
     record = {**request, "created_at": _now_iso()}
-    table.put_item(Item=record)
+    table.put_item(Item=_encode_item(record))
     return record
 
 
@@ -191,7 +241,7 @@ def get_recipient_request(request_id: str) -> dict | None:
     settings = get_settings()
     table = get_table(settings.recipients_table)
     resp = table.get_item(Key={"id": request_id})
-    return resp.get("Item")
+    return cast("dict[str, Any] | None", resp.get("Item"))
 
 
 def update_recipient_request(request_id: str, updates: dict) -> dict | None:
@@ -211,25 +261,41 @@ def update_recipient_request(request_id: str, updates: dict) -> dict | None:
         Key={"id": request_id},
         UpdateExpression="SET " + ", ".join(expr_parts),
         ExpressionAttributeNames=expr_names,
-        ExpressionAttributeValues=expr_values,
+        ExpressionAttributeValues=_encode_item(expr_values),
     )
     return get_recipient_request(request_id)
 
 
+def delete_recipient_request(request_id: str) -> bool:
+    """Delete a recipient request.
+
+    Used by the right-to-delete endpoint; callers should record a separate
+    audit entry capturing the deletion request.
+    """
+    settings = get_settings()
+    table = get_table(settings.recipients_table)
+    resp = table.delete_item(Key={"id": request_id}, ReturnValues="ALL_OLD")
+    return "Attributes" in resp
+
+
 def list_recipient_requests(resolved: bool | None = None, limit: int = 50) -> list[dict]:
-    """List recipient requests, optionally filtered by resolved status."""
+    """List recipient requests, optionally filtered by resolved status.
+
+    Uses a scan + filter expression: DynamoDB does not allow BOOLEAN
+    partition keys, so `resolved` cannot be an indexed query.
+    """
     settings = get_settings()
     table = get_table(settings.recipients_table)
     if resolved is not None:
-        resp = table.query(
-            IndexName="resolved-index",
-            KeyConditionExpression=Key("resolved").eq(resolved),
+        from boto3.dynamodb.conditions import Attr
+
+        resp = table.scan(
+            FilterExpression=Attr("resolved").eq(bool(resolved)),
             Limit=limit,
-            ScanIndexForward=False,
         )
     else:
         resp = table.scan(Limit=limit)
-    return resp.get("Items", [])
+    return cast("list[dict[str, Any]]", resp.get("Items", []))
 
 
 # ── Shifts ─────────────────────────────────────────────────────────────────
@@ -240,7 +306,7 @@ def create_shift(shift: dict) -> dict:
     settings = get_settings()
     table = get_table(settings.shifts_table)
     record = {**shift, "created_at": _now_iso()}
-    table.put_item(Item=record)
+    table.put_item(Item=_encode_item(record))
     return record
 
 
@@ -249,7 +315,7 @@ def get_shift(shift_id: str) -> dict | None:
     settings = get_settings()
     table = get_table(settings.shifts_table)
     resp = table.get_item(Key={"id": shift_id})
-    return resp.get("Item")
+    return cast("dict[str, Any] | None", resp.get("Item"))
 
 
 def update_shift(shift_id: str, updates: dict) -> dict | None:
@@ -269,7 +335,7 @@ def update_shift(shift_id: str, updates: dict) -> dict | None:
         Key={"id": shift_id},
         UpdateExpression="SET " + ", ".join(expr_parts),
         ExpressionAttributeNames=expr_names,
-        ExpressionAttributeValues=expr_values,
+        ExpressionAttributeValues=_encode_item(expr_values),
     )
     return get_shift(shift_id)
 
@@ -290,18 +356,22 @@ def list_shifts(status: str | None = None, pantry_id: str | None = None, limit: 
     items = resp.get("Items", [])
     if pantry_id:
         items = [i for i in items if i.get("pantry_id") == pantry_id]
-    return items
+    return cast("list[dict[str, Any]]", items)
 
 
 # ── Events ─────────────────────────────────────────────────────────────────
 
 
 def create_event(event: dict) -> dict:
-    """Insert a new event record."""
+    """Insert a new event record.
+
+    Events carry ``created_at`` as their sort key (see the infra stack); the
+    ``id`` is generated when the caller does not provide one.
+    """
     settings = get_settings()
     table = get_table(settings.events_table)
-    record = {**event, "created_at": _now_iso()}
-    table.put_item(Item=record)
+    record = {**event, "id": event.get("id", str(uuid.uuid4())), "created_at": _now_iso()}
+    table.put_item(Item=_encode_item(record))
     return record
 
 
@@ -312,18 +382,26 @@ def list_events(limit: int = 50) -> list[dict]:
     resp = table.scan(Limit=limit)
     items = resp.get("Items", [])
     items.sort(key=lambda x: x.get("created_at", ""), reverse=True)
-    return items[:limit]
+    return cast("list[dict[str, Any]]", items[:limit])
 
 
 # ── Audit Trail ────────────────────────────────────────────────────────────
 
 
 def create_audit_entry(entry: dict) -> dict:
-    """Insert an immutable audit trail entry."""
+    """Insert an audit trail entry.
+
+    Generates the ``id`` partition key (required by the provisioned table) when
+    the caller does not supply one, and stamps the ``timestamp`` sort key.
+    """
     settings = get_settings()
     table = get_table(settings.audit_table)
-    record = {**entry, "timestamp": _now_iso()}
-    table.put_item(Item=record)
+    record = {
+        **entry,
+        "id": entry.get("id", str(uuid.uuid4())),
+        "timestamp": _now_iso(),
+    }
+    table.put_item(Item=_encode_item(record))
     return record
 
 
@@ -334,7 +412,7 @@ def list_audit_entries(limit: int = 50) -> list[dict]:
     resp = table.scan(Limit=limit)
     items = resp.get("Items", [])
     items.sort(key=lambda x: x.get("timestamp", ""), reverse=True)
-    return items[:limit]
+    return cast("list[dict[str, Any]]", items[:limit])
 
 
 def get_dashboard_stats() -> dict:

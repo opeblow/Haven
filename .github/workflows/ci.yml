@@ -61,7 +61,7 @@ jobs:
       - uses: astral-sh/setup-uv@v4
       - working-directory: services/agents
         run: |
-          uv sync
+          uv sync --extra dev
           uv run ruff check .
           uv run ruff format --check .
           uv run mypy haven/
@@ -70,3 +70,16 @@ jobs:
         with:
           files: services/agents/coverage.xml
           token: ${{ secrets.CODECOV_TOKEN }}
+
+  web-build:
+    name: Web Build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @haven/web build

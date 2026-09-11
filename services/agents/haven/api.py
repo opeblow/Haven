@@ -3,20 +3,18 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
-from typing import Any
+from typing import Annotated, Any
 
 import structlog
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from haven.agents.supervisor import Supervisor
 from haven.config import get_settings
 from haven.db import (
-    create_donation,
-    create_event,
-    create_recipient_request,
     create_volunteer,
+    delete_recipient_request,
     get_dashboard_stats,
     get_donation,
     list_audit_entries,
@@ -31,6 +29,19 @@ logger = structlog.get_logger()
 settings = get_settings()
 
 supervisor: Supervisor | None = None
+
+
+# ── Auth helpers ───────────────────────────────────────────────────────────
+
+
+async def require_api_key(x_api_key: Annotated[str | None, Header()] = None) -> str:
+    """FastAPI dependency that validates an API key when one is configured.
+
+    When HAVEN_API_KEY is empty or unset the check is skipped (dev mode).
+    """
+    if settings.api_key and x_api_key != settings.api_key:
+        raise HTTPException(status_code=401, detail="Invalid or missing API key.")
+    return x_api_key or ""
 
 
 @asynccontextmanager
@@ -128,7 +139,10 @@ async def health_check() -> dict[str, Any]:
 
 
 @app.post("/api/donations/offer")
-async def submit_donation_offer(request: DonationOfferRequest) -> dict[str, Any]:
+async def submit_donation_offer(
+    request: DonationOfferRequest,
+    _api_key: Annotated[str, Depends(require_api_key)],
+) -> dict[str, Any]:
     """Submit a new donation offer for processing."""
     if supervisor is None:
         raise HTTPException(status_code=503, detail="Supervisor not initialized")
@@ -156,12 +170,27 @@ async def get_donation_detail(donation_id: str) -> dict[str, Any]:
 
 
 @app.post("/api/recipients/request")
-async def submit_recipient_request(request: RecipientRequestModel) -> dict[str, Any]:
+async def submit_recipient_request(
+    request: RecipientRequestModel,
+    _api_key: Annotated[str, Depends(require_api_key)],
+) -> dict[str, Any]:
     """Submit a request from someone seeking aid."""
     if supervisor is None:
         raise HTTPException(status_code=503, detail="Supervisor not initialized")
     result = await supervisor.handle_recipient_request(request.model_dump())
     return {"success": True, "result": result}
+
+
+@app.delete("/api/recipients/{request_id}")
+async def delete_recipient_endpoint(
+    request_id: str,
+    _api_key: Annotated[str, Depends(require_api_key)],
+) -> dict[str, Any]:
+    """Delete a recipient request by ID."""
+    deleted = delete_recipient_request(request_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Recipient request not found")
+    return {"success": True, "deleted_id": request_id}
 
 
 @app.get("/api/recipients")
@@ -175,7 +204,10 @@ async def get_recipient_requests(resolved: bool | None = None, limit: int = 50) 
 
 
 @app.post("/api/volunteers/inquiry")
-async def submit_volunteer_inquiry(request: VolunteerInquiryModel) -> dict[str, Any]:
+async def submit_volunteer_inquiry(
+    request: VolunteerInquiryModel,
+    _api_key: Annotated[str, Depends(require_api_key)],
+) -> dict[str, Any]:
     """Submit a volunteer inquiry. Stores in DynamoDB."""
     import uuid
 
@@ -205,7 +237,10 @@ async def get_volunteers(status: str | None = None, limit: int = 50) -> dict[str
 
 
 @app.post("/api/shifts")
-async def create_shift_endpoint(request: ShiftCreateModel) -> dict[str, Any]:
+async def create_shift_endpoint(
+    request: ShiftCreateModel,
+    _api_key: Annotated[str, Depends(require_api_key)],
+) -> dict[str, Any]:
     """Create a new volunteer shift in DynamoDB."""
     import uuid
 

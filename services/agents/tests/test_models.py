@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from haven.models import (
     AgentEvent,
@@ -80,8 +80,8 @@ class TestDonorOffer:
             quantity="1 lb",
             category="other",
         )
-        assert offer.created_at.tzinfo == timezone.utc
-        assert offer.updated_at.tzinfo == timezone.utc
+        assert offer.created_at.tzinfo == UTC
+        assert offer.updated_at.tzinfo == UTC
 
 
 class TestVolunteer:
@@ -146,8 +146,8 @@ class TestShift:
             pantry_id="pantry-001",
             pantry_name="Downtown Pantry",
             role="food_distribution",
-            start_time=datetime(2026, 9, 12, 9, 0, tzinfo=timezone.utc),
-            end_time=datetime(2026, 9, 12, 13, 0, tzinfo=timezone.utc),
+            start_time=datetime(2026, 9, 12, 9, 0, tzinfo=UTC),
+            end_time=datetime(2026, 9, 12, 13, 0, tzinfo=UTC),
             volunteers_needed=3,
         )
         assert shift.pantry_name == "Downtown Pantry"

@@ -39,26 +39,6 @@ const statusColors: Record<string, string> = {
   low: "bg-haven-green/20 text-haven-green",
 };
 
-function Sparkline({ data, color }: { data: number[]; color: string }) {
-  const max = Math.max(...data);
-  const min = Math.min(...data);
-  const range = max - min || 1;
-  const width = 120;
-  const height = 32;
-  const points = data
-    .map((v, i) => {
-      const x = (i / (data.length - 1)) * width;
-      const y = height - ((v - min) / range) * height;
-      return `${x},${y}`;
-    })
-    .join(" ");
-  return (
-    <svg width={width} height={height} className="opacity-50">
-      <polyline fill="none" stroke={color} strokeWidth="1.5" points={points} />
-    </svg>
-  );
-}
-
 function formatEventType(type: string): string {
   return type.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
 }
@@ -92,6 +72,7 @@ export default function DashboardPage() {
         ]);
         setStats(statsData);
         setEvents(eventsData.events);
+        setError(null);
       } catch (e) {
         setError(e instanceof Error ? e.message : "Failed to load dashboard");
       } finally {
@@ -112,7 +93,7 @@ export default function DashboardPage() {
     );
   }
 
-  if (error) {
+  if (!stats && error) {
     return (
       <div className="flex items-center justify-center h-64">
         <AlertCircle className="w-6 h-6 text-rose-400" />
@@ -127,28 +108,24 @@ export default function DashboardPage() {
       value: stats?.total_donations?.toLocaleString() || "0",
       icon: Package,
       color: "text-haven-green",
-      sparkline: [40, 55, 45, 60, 50, 70, 65, 80, 75, 90, 85, stats?.total_donations || 0],
     },
     {
       label: "Active Volunteers",
       value: stats?.active_volunteers?.toLocaleString() || "0",
       icon: Users,
       color: "text-violet-400",
-      sparkline: [30, 40, 35, 50, 45, 55, 60, 50, 65, 70, 60, stats?.active_volunteers || 0],
     },
     {
       label: "Lbs Distributed",
       value: stats?.total_lbs_distributed?.toLocaleString() || "0",
       icon: Truck,
       color: "text-haven-amber",
-      sparkline: [20, 30, 25, 40, 35, 45, 50, 40, 55, 60, 50, stats?.total_lbs_distributed || 0],
     },
     {
       label: "Open Shifts",
       value: stats?.open_shifts?.toLocaleString() || "0",
       icon: Clock,
       color: "text-haven-cyan",
-      sparkline: [50, 50, 50, 50, 50, 50, 50, 50, 50, 50, 50, stats?.open_shifts || 0],
     },
   ];
 
@@ -195,9 +172,6 @@ export default function DashboardPage() {
               </div>
               <div className="text-2xl font-bold font-mono">{stat.value}</div>
               <div className="text-xs text-haven-muted mt-1">{stat.label}</div>
-              <div className="mt-3 flex justify-end">
-                <Sparkline data={stat.sparkline} color={stat.color.includes("green") ? "#10B981" : stat.color.includes("violet") ? "#8B5CF6" : stat.color.includes("cyan") ? "#06B6D4" : "#F59E0B"} />
-              </div>
             </motion.div>
           );
         })}

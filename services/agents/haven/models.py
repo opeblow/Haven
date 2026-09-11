@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from enum import Enum
 
 from pydantic import BaseModel, Field
@@ -60,8 +60,8 @@ class DonorOffer(BaseModel):
     longitude: float | None = None
     status: DonationStatus = DonationStatus.OFFERED
     notes: str = ""
-    created_at: datetime = Field(default_factory=datetime.now(timezone.utc))
-    updated_at: datetime = Field(default_factory=datetime.now(timezone.utc))
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
 class Volunteer(BaseModel):
@@ -82,7 +82,7 @@ class Volunteer(BaseModel):
     status: VolunteerStatus = VolunteerStatus.AVAILABLE
     latitude: float | None = None
     longitude: float | None = None
-    created_at: datetime = Field(default_factory=datetime.now(timezone.utc))
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
 class RecipientRequest(BaseModel):
@@ -101,7 +101,7 @@ class RecipientRequest(BaseModel):
     resolved: bool = False
     assigned_pantry: str = ""
     notes: str = ""
-    created_at: datetime = Field(default_factory=datetime.now(timezone.utc))
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
 class Shift(BaseModel):
@@ -117,7 +117,7 @@ class Shift(BaseModel):
     volunteers_assigned: list[str] = Field(default_factory=list)
     status: ShiftStatus = ShiftStatus.OPEN
     requirements: list[str] = Field(default_factory=list)
-    created_at: datetime = Field(default_factory=datetime.now(timezone.utc))
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
 class LogisticsRoute(BaseModel):
@@ -134,7 +134,7 @@ class LogisticsRoute(BaseModel):
     temperature_range: str = ""
     stops: list[str] = Field(default_factory=list)
     status: str = "planned"
-    created_at: datetime = Field(default_factory=datetime.now(timezone.utc))
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
 class AgentEvent(BaseModel):
@@ -147,4 +147,4 @@ class AgentEvent(BaseModel):
     urgency: UrgencyLevel = UrgencyLevel.MEDIUM
     requires_human: bool = False
     processed_by: list[str] = Field(default_factory=list)
-    created_at: datetime = Field(default_factory=datetime.now(timezone.utc))
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))

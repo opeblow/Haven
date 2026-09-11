@@ -2,11 +2,6 @@
 
 from __future__ import annotations
 
-import uuid
-from unittest.mock import MagicMock, patch
-
-import pytest
-
 
 class TestDonorTools:
     def test_parse_donation_offer_creates_record(self, mock_dynamodb):
@@ -25,7 +20,7 @@ class TestDonorTools:
         )
 
         assert mock_table.put_item.called
-        put_call = mock_table.put_item.call_args
+        put_call = mock_table.put_item.call_args_list[0]
         item = put_call[1]["Item"] if "Item" in put_call[1] else put_call[0][0]
         assert item["donor_name"] == "Green Farms"
         assert item["category"] == "produce"
@@ -35,9 +30,7 @@ class TestDonorTools:
     def test_accept_donation_updates_record(self, mock_dynamodb):
         """Verify accept_donation calls DynamoDB update_item."""
         _, mock_table = mock_dynamodb
-        mock_table.get_item.return_value = {
-            "Item": {"id": "don-123", "donor_name": "Test Farm", "status": "offered"}
-        }
+        mock_table.get_item.return_value = {"Item": {"id": "don-123", "donor_name": "Test Farm", "status": "offered"}}
 
         from haven.tools.donor_tools import accept_donation
 
@@ -70,7 +63,6 @@ class TestDonorTools:
 
     def test_cold_chain_bakery_not_required(self, mock_dynamodb):
         """Verify bakery doesn't require cold chain by default."""
-        _, mock_table = mock_dynamodb
 
         from haven.tools.donor_tools import check_cold_chain_requirements
 
@@ -81,7 +73,6 @@ class TestDonorTools:
 
     def test_generate_tax_receipt_creates_audit(self, mock_dynamodb):
         """Verify tax receipt generation logs to audit trail."""
-        _, mock_table = mock_dynamodb
 
         from haven.tools.donor_tools import generate_tax_receipt
 
@@ -97,7 +88,7 @@ class TestVolunteerTools:
     def test_get_open_shifts_from_db(self, mock_dynamodb):
         """Verify get_open_shifts queries DynamoDB, not returning hardcoded data."""
         _, mock_table = mock_dynamodb
-        mock_table.scan.return_value = {
+        mock_table.query.return_value = {
             "Items": [
                 {"id": "s1", "pantry_name": "Downtown", "status": "open"},
                 {"id": "s2", "pantry_name": "Eastside", "status": "open"},
@@ -112,11 +103,13 @@ class TestVolunteerTools:
         assert len(result["shifts"]) == 2
 
     def test_match_volunteer_updates_records(self, mock_dynamodb):
-        """Verify match_volunteer updates both volunteer and shift records."""
+        """Verify match_volunteer updates records and stages (not sends) an offer."""
         _, mock_table = mock_dynamodb
         mock_table.get_item.side_effect = [
             {"Item": {"id": "v1", "name": "Maria", "status": "available"}},
             {"Item": {"id": "s1", "volunteers_assigned": [], "volunteers_needed": 2, "status": "open"}},
+            {"Item": {"id": "v1", "name": "Maria", "status": "matched"}},
+            {"Item": {"id": "s1", "volunteers_assigned": ["v1"], "volunteers_needed": 2, "status": "open"}},
         ]
 
         from haven.tools.volunteer_tools import match_volunteer
@@ -130,11 +123,11 @@ class TestVolunteerTools:
         )
 
         assert result["match_score"] == 100
-        assert result["offer_sent"] is True
+        assert result["offer_staged"] is True
+        assert result["offer_sent"] is False
 
     def test_match_low_score_no_offer(self, mock_dynamodb):
-        """Verify low match scores don't send offers."""
-        _, mock_table = mock_dynamodb
+        """Verify low match scores don't stage offers."""
 
         from haven.tools.volunteer_tools import match_volunteer
 
@@ -147,6 +140,7 @@ class TestVolunteerTools:
         )
 
         assert result["match_score"] == 0
+        assert result["offer_staged"] is False
         assert result["offer_sent"] is False
 
     def test_handle_no_show_updates_records(self, mock_dynamodb):
@@ -155,6 +149,8 @@ class TestVolunteerTools:
         mock_table.get_item.side_effect = [
             {"Item": {"id": "v1", "no_shows": 0}},
             {"Item": {"id": "s1", "volunteers_assigned": ["v1", "v2"]}},
+            {"Item": {"id": "v1", "no_shows": 1, "status": "available"}},
+            {"Item": {"id": "s1", "volunteers_assigned": ["v2"]}},
         ]
 
         from haven.tools.volunteer_tools import handle_no_show
@@ -162,13 +158,20 @@ class TestVolunteerTools:
         result = handle_no_show("v1", "s1")
 
         assert result["action"] == "no_show_logged"
-        assert result["backfill_triggered"] is True
+        assert result["backfill_triggered"] is False
 
     def test_calculate_stats_from_real_data(self, mock_dynamodb):
         """Verify stats are computed from DynamoDB data, not hardcoded."""
         _, mock_table = mock_dynamodb
         mock_table.get_item.return_value = {
-            "Item": {"id": "v1", "name": "Maria", "total_shifts_completed": 20, "no_shows": 2, "rating": 4.8, "skills": ["driving"]}
+            "Item": {
+                "id": "v1",
+                "name": "Maria",
+                "total_shifts_completed": 20,
+                "no_shows": 2,
+                "rating": 4.8,
+                "skills": ["driving"],
+            }
         }
 
         from haven.tools.volunteer_tools import calculate_volunteer_stats
@@ -183,16 +186,15 @@ class TestVolunteerTools:
 
 class TestRecipientTools:
     def test_verify_eligibility_creates_audit(self, mock_dynamodb):
-        """Verify eligibility check logs audit trail."""
-        _, mock_table = mock_dynamodb
+        """Verify eligibility check logs audit trail, honest when no pantry data."""
 
         from haven.tools.recipient_tools import verify_eligibility
 
         result = verify_eligibility("pantry-001", 4, "12345")
 
-        assert result["eligible"] is True
+        assert result["eligible"] is None
+        assert result["data_available"] is False
         assert result["household_size"] == 4
-        assert len(result["requirements"]) > 0
 
     def test_translate_same_language_passthrough(self):
         """Verify translate returns passthrough when same language."""
@@ -237,20 +239,19 @@ class TestLogisticsTools:
         assert mock_table.put_item.called
 
     def test_dispatch_driver_logs_event(self, mock_dynamodb):
-        """Verify dispatch_driver creates event in DynamoDB."""
+        """Verify dispatch_driver creates event in DynamoDB, honestly notifying."""
         _, mock_table = mock_dynamodb
 
         from haven.tools.logistics_tools import dispatch_driver
 
         result = dispatch_driver("driver-001", "MAN-123", "van")
 
-        assert result["status"] == "dispatched"
-        assert result["driver_notified"] is True
+        assert result["status"] == "logged"
+        assert result["driver_notified"] is False
         assert mock_table.put_item.called
 
     def test_cold_chain_breach_creates_critical_event(self, mock_dynamodb):
         """Verify cold chain breach logs critical event."""
-        _, mock_table = mock_dynamodb
 
         from haven.tools.logistics_tools import track_cold_chain
 
@@ -262,7 +263,6 @@ class TestLogisticsTools:
 
     def test_cold_chain_in_range(self, mock_dynamodb):
         """Verify in-range temperature doesn't trigger alert."""
-        _, mock_table = mock_dynamodb
 
         from haven.tools.logistics_tools import track_cold_chain
 
@@ -274,8 +274,7 @@ class TestLogisticsTools:
 
 class TestComplianceTools:
     def test_generate_usda_report_creates_audit(self, mock_dynamodb):
-        """Verify USDA report generation logs audit trail."""
-        _, mock_table = mock_dynamodb
+        """Verify USDA report generation logs audit trail (draft, not submitted)."""
 
         from haven.tools.compliance_tools import generate_usda_report
 
@@ -287,13 +286,12 @@ class TestComplianceTools:
             unique_recipients=1204,
         )
 
-        assert result["compliance_status"] == "compliant"
+        assert result["compliance_status"] == "draft"
         assert result["metrics"]["pounds_per_meal"] == 1.5
-        assert result["submission_ready"] is True
+        assert result["submission_ready"] is False
 
     def test_log_food_safety_event_critical(self, mock_dynamodb):
-        """Verify critical safety events send notifications."""
-        _, mock_table = mock_dynamodb
+        """Verify critical safety events log a system alert (no external notify)."""
 
         from haven.tools.compliance_tools import log_food_safety_event
 
@@ -305,12 +303,12 @@ class TestComplianceTools:
         )
 
         assert result["logged"] is True
-        assert result["notification_sent"] is True
+        assert result["notification_sent"] is False
+        assert result["system_alert_logged"] is True
         assert result["follow_up_required"] is True
 
     def test_log_food_safety_event_low_severity(self, mock_dynamodb):
         """Verify low severity events don't send notifications."""
-        _, mock_table = mock_dynamodb
 
         from haven.tools.compliance_tools import log_food_safety_event
 
@@ -338,4 +336,4 @@ class TestComplianceTools:
         result = get_compliance_summary()
 
         assert result["total_donations"] == 2
-        assert result["compliance_status"] == "compliant"
+        assert result["compliance_status"] == "pending_review"
