@@ -1,0 +1,30 @@
+{
+  "name": "haven",
+  "version": "0.1.0",
+  "private": true,
+  "description": "The autonomous operations layer for food banks, shelters, and mutual aid networks",
+  "scripts": {
+    "dev": "turbo dev",
+    "build": "turbo build",
+    "lint": "turbo lint",
+    "typecheck": "turbo typecheck",
+    "test": "turbo test",
+    "format": "prettier --write .",
+    "prepare": "husky"
+  },
+  "devDependencies": {
+    "turbo": "^2.1.0",
+    "prettier": "^3.3.0",
+    "husky": "^9.1.0",
+    "lint-staged": "^15.2.0"
+  },
+  "lint-staged": {
+    "*.{ts,tsx}": ["eslint --fix", "prettier --write"],
+    "*.{py}": ["ruff format", "ruff check --fix"],
+    "*.{json,md,yml,yaml}": ["prettier --write"]
+  },
+  "packageManager": "pnpm@9.12.0",
+  "engines": {
+    "node": ">=20"
+  }
+}
