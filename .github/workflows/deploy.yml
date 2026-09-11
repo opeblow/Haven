@@ -16,6 +16,16 @@ jobs:
     permissions:
       id-token: write
       contents: read
+    # Deploy intentionally disabled until AWS infrastructure + OIDC role exist.
+    # The job shows as "skipped" (not failed) until ENABLE_DEPLOY is set.
+    #
+    # To re-enable:
+    #   1. Create the IAM deploy role with a GitHub OIDC trust policy
+    #      (aud: sts.amazonaws.com, sub: repo:opeblow/Haven:ref:refs/heads/main)
+    #   2. Set the AWS_DEPLOY_ROLE_ARN secret on the repo or the "staging" environment
+    #   3. Set the STAGING_URL variable (repo or "staging" environment)
+    #   4. Set the repository Actions variable ENABLE_DEPLOY = true
+    if: vars.ENABLE_DEPLOY == 'true'
     steps:
       - uses: actions/checkout@v4
       - uses: aws-actions/configure-aws-credentials@v4
