@@ -1,0 +1,15 @@
+# Default owners for everything in the repo
+* @haven-agent/maintainers
+
+# Agent system
+/services/agents/ @haven-agent/agents-team
+
+# Frontend
+/apps/web/ @haven-agent/frontend-team
+
+# Infrastructure
+/services/infra/ @haven-agent/platform-team
+
+# Security
+/security/ @haven-agent/security-team
+SECURITY.md @haven-agent/security-team

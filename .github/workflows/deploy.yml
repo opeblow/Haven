@@ -1,0 +1,45 @@
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+
+concurrency:
+  group: deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy-staging:
+    name: Deploy to Staging
+    runs-on: ubuntu-latest
+    environment: staging
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: us-east-1
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@v4
+      - run: pnpm install --frozen-lockfile
+      - name: Deploy CDK
+        working-directory: services/infra
+        run: |
+          pnpm install --frozen-lockfile
+          npx cdk deploy --all --require-approval never
+      - name: Build Frontend
+        working-directory: apps/web
+        run: pnpm build
+      - name: Smoke Tests
+        run: |
+          curl -f ${{ vars.STAGING_URL }}/api/health || exit 1
